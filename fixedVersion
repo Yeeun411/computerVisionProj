@@ -1,0 +1,114 @@
+import scipy.io as io
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+import tensorflow as tf
+
+# Load the data
+data = io.loadmat("/Users/kang-yeeun/Desktop/face_landmark.mat")
+X = data["images"]
+Y = data["landmarks"]
+X, Y = np.float32(X), np.float32(Y)
+
+# Reshape the images X into 3D (H,W,C)
+X = np.reshape(X, [-1, 96, 96, 1])
+
+# Visualize random images with keypoints
+num_images = 5  # Number of random images to visualize
+random_indices = np.random.choice(len(X), num_images, replace=False)
+
+fig, axes = plt.subplots(nrows=1, ncols=num_images, figsize=(15, 3))
+
+for i, idx in enumerate(random_indices):
+    im = X[idx].squeeze()  # Squeeze the single-channel dimension
+    keypoints = Y[idx].reshape(-1, 2)
+
+    axes[i].imshow(im, cmap="gray")
+    axes[i].set_title("Image {}".format(idx))
+
+    for point in keypoints:
+        axes[i].plot(point[0], point[1], 'r+', markersize=5)
+
+plt.tight_layout()
+plt.show()
+
+#L2-loss function
+def l2_loss(y, y_true):
+    return tf.reduce_mean(tf.square(y_true - y))
+
+#L1-loss function
+def l1_loss(y, y_true):
+    return tf.reduce_mean(tf.abs(y_true - y))
+
+#cosine-loss function
+def cosine_loss(y, y_true):
+    y_true_norm = tf.nn.l2_normalize(y_true, axis=-1)
+    y_pred_norm = tf.nn.l2_normalize(y, axis=-1)
+    cosine_distance = 1 - tf.reduce_sum(y_true_norm * y_pred_norm, axis=-1)
+    return tf.reduce_mean(cosine_distance)
+
+# Reshape the landmarks Y
+Y = np.reshape(Y, [-1, 30])
+
+# Randomly split into train (0.6), val(0.2), test(0.2)
+X_temp, X_test, Y_temp, Y_test = train_test_split(X, Y, test_size=0.2, random_state=101)
+X_train, X_val, Y_train, Y_val = train_test_split(X_temp, Y_temp, test_size=0.25, random_state=101)
+
+regularizer = tf.keras.regularizers.L2(0.001)
+
+x_in = x = tf.keras.Input(shape=[96, 96, 1])
+x = tf.keras.layers.Conv2D(filters=32, kernel_size=3, activation="relu", padding="same", kernel_regularizer=regularizer)(x)
+x = tf.keras.layers.MaxPool2D(pool_size=[2, 2], strides=2)(x)
+x = tf.keras.layers.Conv2D(filters=32, kernel_size=3, activation="relu", padding="same", kernel_regularizer=regularizer)(x)
+x = tf.keras.layers.MaxPool2D(pool_size=[2, 2], strides=2)(x)
+x = tf.keras.layers.Conv2D(filters=64, kernel_size=3, activation="relu", padding="same", kernel_regularizer=regularizer)(x)
+x = tf.keras.layers.MaxPool2D(pool_size=[2, 2], strides=2)(x)
+x = tf.keras.layers.Conv2D(filters=64, kernel_size=3, activation="relu", padding="same", kernel_regularizer=regularizer)(x)
+x = tf.keras.layers.MaxPool2D(pool_size=[2, 2], strides=2)(x)
+x = tf.keras.layers.Flatten()(x)
+x = tf.keras.layers.Dense(units=64, activation=tf.nn.softmax, kernel_regularizer=regularizer)(x)
+y = x = tf.keras.layers.Dense(units=30, activation=None, kernel_regularizer=regularizer)(x)
+model = tf.keras.Model(inputs=x_in, outputs=y)
+model.summary()
+
+@tf.function
+def predict(x):
+    return model(x)
+
+@tf.function
+def optimize(x, y_true, loss_type="L2", lamda=0.0):
+    with tf.GradientTape() as tape:
+        y = predict(x)
+        if loss_type == "L2":
+            loss = l2_loss(y, y_true)
+        elif loss_type == "L1":
+            loss = l1_loss(y, y_true)
+        elif loss_type == "cosine":
+            loss = cosine_loss(y, y_true)
+        loss += sum(model.losses)
+    grads = tape.gradient(loss, model.trainable_variables)
+    opt.apply_gradients(zip(grads, model.trainable_variables))
+    return loss
+
+max_epochs = 100
+batch_size = 32
+loss_history = []
+val_loss_best = np.inf
+loss_type = "L1"  # Change to "L1" or "cosine" to use different loss functions
+lamda = 0.1  # Lambda parameter for combining loss functions if desired
+
+for epoch in range(max_epochs):
+    idx = np.random.permutation(len(X_train))
+    batch_idx = idx[:batch_size]
+    train_loss = optimize(X_train[batch_idx], Y_train[batch_idx], loss_type=loss_type, lamda=lamda)
+    train_loss = train_loss.numpy()
+    y = predict(X_val)
+    val_loss = l2_loss(y, Y_val).numpy()
+    if val_loss < val_loss_best:
+        val_loss_best = val_loss
+    print(epoch, '.', train_loss, val_loss, val_loss_best)
+    loss_history.append([train_loss, val_loss])
+
+p = model.predict(X_test)
+mse = np.mean(np.square(Y_test - p))
+print("Mean Square Error:", mse)
